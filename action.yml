@@ -1,0 +1,20 @@
+export function matchesPattern(filename, pattern) {
+  // very small glob matcher: supports * and **
+  const escaped = pattern
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*\*/g, '§DOUBLESTAR§')
+    .replace(/\*/g, '[^/]*')
+    .replace(/§DOUBLESTAR§/g, '.*');
+  return new RegExp(`^${escaped}$`).test(filename);
+}
+
+export function shouldSkip(filename, excludePatterns) {
+  return excludePatterns.some((p) => matchesPattern(filename, p.trim()));
+}
+
+export function truncateDiff(patch, maxLines) {
+  if (!patch) return '';
+  const lines = patch.split('\n');
+  if (lines.length <= maxLines) return patch;
+  return lines.slice(0, maxLines).join('\n') + `\n... [truncated, ${lines.length - maxLines} more lines]`;
+}

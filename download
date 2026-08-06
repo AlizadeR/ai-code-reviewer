@@ -1,0 +1,124 @@
+import core from '@actions/core';
+import github from '@actions/github';
+import OpenAI from 'openai';
+import { shouldSkip, truncateDiff } from './lib.js';
+
+// NVIDIA NIM exposes an OpenAI-compatible endpoint.
+// Docs / model catalog: https://build.nvidia.com/models
+const NVIDIA_BASE_URL = 'https://integrate.api.nvidia.com/v1';
+
+async function reviewFile(client, model, filename, patch) {
+  const prompt = `You are a senior software engineer doing a focused code review.
+Review ONLY the diff below for the file "${filename}".
+
+Report:
+1. Real bugs or logic errors (be specific, cite the line)
+2. Security issues (e.g. injection, secrets, unsafe input handling)
+3. Clear maintainability problems (only if significant)
+
+Do NOT comment on style/formatting unless it causes a real problem.
+If the diff looks fine, reply with exactly: "No significant issues found."
+Keep the response concise, use bullet points, max ~150 words.
+
+Diff:
+\`\`\`diff
+${patch}
+\`\`\`
+`;
+
+  const response = await client.chat.completions.create({
+    model,
+    messages: [{ role: 'user', content: prompt }],
+    temperature: 0.2,
+    max_tokens: 500,
+  });
+
+  return response.choices[0]?.message?.content?.trim() ?? '';
+}
+
+async function run() {
+  try {
+    const githubToken = core.getInput('github-token', { required: true });
+    const nvidiaApiKey = core.getInput('nvidia-api-key', { required: true });
+    const model = core.getInput('model') || 'qwen/qwen3-coder-480b-a35b-instruct';
+    const maxDiffLines = parseInt(core.getInput('max-diff-lines') || '400', 10);
+    const excludePatterns = (core.getInput('exclude-patterns') || '').split(',').filter(Boolean);
+
+    const context = github.context;
+    if (context.eventName !== 'pull_request' && context.eventName !== 'pull_request_target') {
+      core.info('Not a pull_request event, skipping.');
+      return;
+    }
+
+    const pr = context.payload.pull_request;
+    if (!pr) {
+      core.setFailed('No pull_request payload found in context.');
+      return;
+    }
+
+    const octokit = github.getOctokit(githubToken);
+    const nvidia = new OpenAI({ apiKey: nvidiaApiKey, baseURL: NVIDIA_BASE_URL });
+
+    const { owner, repo } = context.repo;
+    const pull_number = pr.number;
+
+    core.info(`Reviewing PR #${pull_number} in ${owner}/${repo}`);
+
+    const { data: files } = await octokit.rest.pulls.listFiles({
+      owner,
+      repo,
+      pull_number,
+      per_page: 100,
+    });
+
+    const reviewable = files.filter(
+      (f) => f.patch && f.status !== 'removed' && !shouldSkip(f.filename, excludePatterns)
+    );
+
+    if (reviewable.length === 0) {
+      core.info('No reviewable files (all excluded or no diffs). Exiting.');
+      return;
+    }
+
+    core.info(`Reviewing ${reviewable.length} file(s) with model "${model}"...`);
+
+    const results = [];
+    for (const file of reviewable) {
+      const patch = truncateDiff(file.patch, maxDiffLines);
+      try {
+        const review = await reviewFile(nvidia, model, file.filename, patch);
+        results.push({ filename: file.filename, review });
+      } catch (err) {
+        core.warning(`Review failed for ${file.filename}: ${err.message}`);
+        results.push({ filename: file.filename, review: `_Review failed: ${err.message}_` });
+      }
+    }
+
+    const meaningful = results.filter(
+      (r) => !r.review.toLowerCase().includes('no significant issues found')
+    );
+
+    let body;
+    if (meaningful.length === 0) {
+      body = `### 🤖 AI Code Review\n\nNo significant issues found in ${results.length} reviewed file(s). ✅\n\n<sub>Powered by NVIDIA NIM (${model})</sub>`;
+    } else {
+      const sections = meaningful
+        .map((r) => `#### \`${r.filename}\`\n${r.review}`)
+        .join('\n\n---\n\n');
+      body = `### 🤖 AI Code Review\n\nReviewed ${results.length} file(s), found notes on ${meaningful.length}:\n\n${sections}\n\n<sub>Powered by NVIDIA NIM (${model}) — this is an automated review, use your judgment.</sub>`;
+    }
+
+    await octokit.rest.issues.createComment({
+      owner,
+      repo,
+      issue_number: pull_number,
+      body,
+    });
+
+    core.info('Review posted successfully.');
+  } catch (error) {
+    core.setFailed(error.message);
+  }
+}
+
+run();
