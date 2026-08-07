@@ -1,7 +1,7 @@
 # AI Code Reviewer
 
 A GitHub Action that automatically reviews pull requests using an AI model
-hosted for free on [NVIDIA NIM](https://build.nvidia.com/models) (OpenAI-compatible API).
+hosted for free on [NVIDIA NIM]/(https://build.nvidia.com/models) (OpenAI-compatible API).
 
 On every PR, it:
 1. Fetches the diff for each changed file
