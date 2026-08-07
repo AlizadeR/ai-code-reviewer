@@ -7,7 +7,6 @@ On every PR, it:
 1. Fetches the diff for each changed file
 2. Sends each file's diff to the model for review (bugs, security issues, real maintainability problems)
 3. Posts a single summary comment on the PR
-   
 
 ## 1. Get an NVIDIA NIM API key (free)
 
